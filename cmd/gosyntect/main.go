@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -12,45 +13,79 @@ import (
 	"github.com/sourcegraph/gosyntect"
 )
 
+var scopifyFlag = flag.Bool("scopify", false, "print scopified file regions instead of requesting highlighted HTML")
+
 func main() {
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), `usage: gosyntect [-scopify] <server> <theme?> <file>
+
+  Highlight file to HTML:
+  	gosyntect <server> <theme> <file>
+  	gosyntect http://localhost:9238 'InspiredGitHub' gosyntect.go
+
+  Scopify file as JSON:
+  	gosyntect -scopify <server> <file>
+  	gosyntect -scopify http://localhost:9238 gosyntect.go
+
+`)
+	}
+	flag.Parse()
 	log.SetFlags(0)
 	log.SetPrefix("gosyntect: ")
-	if len(os.Args) != 4 {
-		fmt.Println("usage: gosyntect <server> <theme> <file.go>")
-		fmt.Println("")
-		fmt.Println("example:")
-		fmt.Println("	gosyntect http://localhost:9238 'InspiredGitHub' gosyntect.go")
-		fmt.Println("")
+	if !*scopifyFlag && flag.NArg() != 3 || *scopifyFlag && flag.NArg() != 2 {
+		flag.PrintDefaults()
 		os.Exit(2)
 	}
 
 	// Validate server argument.
-	server := os.Args[1]
+	server := flag.Arg(0)
 	if !strings.HasPrefix(server, "http://") && !strings.HasPrefix(server, "https://") {
 		log.Fatal("expected server to have http:// or https:// prefix")
 	}
 
-	// Validate theme argument.
-	theme := os.Args[2]
-	if theme == "" {
-		log.Fatal("theme argument is required (e.x. 'InspiredGitHub')")
+	query := &gosyntect.Query{
+		Scopify: *scopifyFlag,
 	}
 
-	// Validate file argument.
-	file := os.Args[3]
-	data, err := ioutil.ReadFile(file)
-	if err != nil {
-		log.Fatal(err)
+	if !*scopifyFlag {
+		// Validate theme argument.
+		query.Theme = flag.Arg(1)
+		if query.Theme == "" {
+			log.Fatal("theme argument is required (e.x. 'InspiredGitHub')")
+		}
+
+		// Validate file argument.
+		query.Filepath = flag.Arg(2)
+		data, err := ioutil.ReadFile(query.Filepath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		query.Code = string(data)
+	} else {
+		// Validate file argument.
+		query.Filepath = flag.Arg(1)
+		data, err := ioutil.ReadFile(query.Filepath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		query.Code = string(data)
 	}
+	query.Filepath = filepath.Base(query.Filepath)
 
 	cl := gosyntect.New(server)
-	resp, err := cl.Highlight(context.Background(), &gosyntect.Query{
-		Filepath: filepath.Base(file),
-		Theme:    theme,
-		Code:     string(data),
-	})
+	resp, err := cl.Highlight(context.Background(), query)
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(resp.Data)
+	if resp.Data != "" {
+		fmt.Println(resp.Data)
+	} else {
+		for _, region := range resp.ScopifiedRegions {
+			var scopes []string
+			for _, index := range region.Scopes {
+				scopes = append(scopes, resp.ScopifiedScopeNames[index])
+			}
+			fmt.Printf("%q - %s\n", query.Code[region.Offset:region.Offset+region.Length], strings.Join(scopes, " "))
+		}
+	}
 }

@@ -26,8 +26,14 @@ type Query struct {
 
 	// Theme is the color theme to use for highlighting.
 	//
+	// Not used when Scopify == true.
+	//
 	// See https://github.com/sourcegraph/syntect_server#embedded-themes
 	Theme string `json:"theme"`
+
+	// Scopify specifies whether or not to fetch a scopified version of the
+	// code instead of highlighteed HTML.
+	Scopify bool `json:"scopify"`
 
 	// Code is the literal code to highlight.
 	Code string `json:"code"`
@@ -36,11 +42,39 @@ type Query struct {
 // Response represents a response to a code highlighting query.
 type Response struct {
 	// Data is the actual highlighted HTML version of Query.Code.
+	//
+	// Only present when Query.Scopify was false.
 	Data string
 
 	// Plaintext indicates whether or not a syntax could not be found for the
 	// file and instead it was rendered as plain text.
+	//
+	// Only present when Query.Scopify was false.
 	Plaintext bool
+
+	// DetectedLanguage tells the name of the language that syntect_server
+	// highlighted the code as.
+	DetectedLanguage string
+
+	// ScopifiedScopeNames is a mapping from scope name indexes to scope string
+	// literals.
+	//
+	// Only present when Query.Scopify was true.
+	ScopifiedScopeNames map[int]string
+
+	// ScopifiedRegion represents a single region of the input Code annotated
+	// with scope information from the language grammar.
+	//
+	// Only present when Query.Scopify was true.
+	ScopifiedRegions []ScopifiedRegion
+}
+
+// ScopifiedRegion represents a single region of the input Code annotated
+// with scope information from the language grammar.
+type ScopifiedRegion struct {
+	Offset int   // byte offset relative to the input code
+	Length int   // length of the region
+	Scopes []int // scopes affecting this region according to the language grammar
 }
 
 var (
@@ -58,12 +92,29 @@ var (
 
 type response struct {
 	// Successful response fields.
-	Data      string `json:"data"`
-	Plaintext bool   `json:"plaintext"`
+	Data                string
+	Plaintext           bool
+	DetectedLanguage    string            `json:"detected_language"`
+	ScopifiedScopeNames []string          `json:"scopified_scope_names"`
+	ScopifiedRegions    []ScopifiedRegion `json:"scopified_regions"`
 
 	// Error response fields.
-	Error string `json:"error"`
-	Code  string `json:"code"`
+	Error string
+	Code  string
+}
+
+func (r *response) toSuccessResponse() *Response {
+	scopifiedScopeNames := map[int]string{}
+	for index, scopeName := range r.ScopifiedScopeNames {
+		scopifiedScopeNames[index] = scopeName
+	}
+	return &Response{
+		Data:                r.Data,
+		Plaintext:           r.Plaintext,
+		DetectedLanguage:    r.DetectedLanguage,
+		ScopifiedScopeNames: scopifiedScopeNames,
+		ScopifiedRegions:    r.ScopifiedRegions,
+	}
 }
 
 // Client represents a client connection to a syntect_server.
@@ -128,10 +179,7 @@ func (c *Client) Highlight(ctx context.Context, q *Query) (*Response, error) {
 		}
 		return nil, errors.Wrap(err, c.syntectServer)
 	}
-	return &Response{
-		Data:      r.Data,
-		Plaintext: r.Plaintext,
-	}, nil
+	return r.toSuccessResponse(), nil
 }
 
 func (c *Client) url(path string) string {
